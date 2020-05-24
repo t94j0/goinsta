@@ -11,10 +11,40 @@ import (
 	neturl "net/url"
 	"os"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// StoryReelMention represent story reel mention
+type StoryReelMention struct {
+	X        float64 `json:"x"`
+	Y        float64 `json:"y"`
+	Z        int     `json:"z"`
+	Width    float64 `json:"width"`
+	Height   float64 `json:"height"`
+	Rotation float64 `json:"rotation"`
+	IsPinned int     `json:"is_pinned"`
+	IsHidden int     `json:"is_hidden"`
+	User     User
+}
+
+// StoryCTA represent story cta
+type StoryCTA struct {
+	Links []struct {
+		LinkType                                int         `json:"linkType"`
+		WebURI                                  string      `json:"webUri"`
+		AndroidClass                            string      `json:"androidClass"`
+		Package                                 string      `json:"package"`
+		DeeplinkURI                             string      `json:"deeplinkUri"`
+		CallToActionTitle                       string      `json:"callToActionTitle"`
+		RedirectURI                             interface{} `json:"redirectUri"`
+		LeadGenFormID                           string      `json:"leadGenFormId"`
+		IgUserID                                string      `json:"igUserId"`
+		AppInstallObjectiveInvalidationBehavior interface{} `json:"appInstallObjectiveInvalidationBehavior"`
+	} `json:"links"`
+}
 
 // Item represents media items
 //
@@ -24,7 +54,7 @@ type Item struct {
 	media    Media
 	Comments *Comments `json:"-"`
 
-	TakenAt          float64 `json:"taken_at"`
+	TakenAt          int64   `json:"taken_at"`
 	Pk               int64   `json:"pk"`
 	ID               string  `json:"id"`
 	CommentsDisabled bool    `json:"comments_disabled"`
@@ -81,20 +111,117 @@ type Item struct {
 	NumberOfQualities int     `json:"number_of_qualities,omitempty"`
 
 	// Only for stories
-	StoryEvents              []interface{} `json:"story_events"`
-	StoryHashtags            []interface{} `json:"story_hashtags"`
-	StoryPolls               []interface{} `json:"story_polls"`
-	StoryFeedMedia           []interface{} `json:"story_feed_media"`
-	StorySoundOn             []interface{} `json:"story_sound_on"`
-	CreativeConfig           interface{}   `json:"creative_config"`
-	StoryLocations           []interface{} `json:"story_locations"`
-	StorySliders             []interface{} `json:"story_sliders"`
-	StoryQuestions           []interface{} `json:"story_questions"`
-	StoryProductItems        []interface{} `json:"story_product_items"`
-	SupportsReelReactions    bool          `json:"supports_reel_reactions"`
-	ShowOneTapFbShareTooltip bool          `json:"show_one_tap_fb_share_tooltip"`
-	HasSharedToFb            int64         `json:"has_shared_to_fb"`
+	StoryEvents              []interface{}      `json:"story_events"`
+	StoryHashtags            []interface{}      `json:"story_hashtags"`
+	StoryPolls               []interface{}      `json:"story_polls"`
+	StoryFeedMedia           []interface{}      `json:"story_feed_media"`
+	StorySoundOn             []interface{}      `json:"story_sound_on"`
+	CreativeConfig           interface{}        `json:"creative_config"`
+	StoryLocations           []interface{}      `json:"story_locations"`
+	StorySliders             []interface{}      `json:"story_sliders"`
+	StoryQuestions           []interface{}      `json:"story_questions"`
+	StoryProductItems        []interface{}      `json:"story_product_items"`
+	StoryCTA                 []StoryCTA         `json:"story_cta"`
+	ReelMentions             []StoryReelMention `json:"reel_mentions"`
+	SupportsReelReactions    bool               `json:"supports_reel_reactions"`
+	ShowOneTapFbShareTooltip bool               `json:"show_one_tap_fb_share_tooltip"`
+	HasSharedToFb            int64              `json:"has_shared_to_fb"`
 	Mentions                 []Mentions
+	Audience                 string `json:"audience,omitempty"`
+	StoryMusicStickers       []struct {
+		X              float64 `json:"x"`
+		Y              float64 `json:"y"`
+		Z              int     `json:"z"`
+		Width          float64 `json:"width"`
+		Height         float64 `json:"height"`
+		Rotation       float64 `json:"rotation"`
+		IsPinned       int     `json:"is_pinned"`
+		IsHidden       int     `json:"is_hidden"`
+		IsSticker      int     `json:"is_sticker"`
+		MusicAssetInfo struct {
+			ID                       string `json:"id"`
+			Title                    string `json:"title"`
+			Subtitle                 string `json:"subtitle"`
+			DisplayArtist            string `json:"display_artist"`
+			CoverArtworkURI          string `json:"cover_artwork_uri"`
+			CoverArtworkThumbnailURI string `json:"cover_artwork_thumbnail_uri"`
+			ProgressiveDownloadURL   string `json:"progressive_download_url"`
+			HighlightStartTimesInMs  []int  `json:"highlight_start_times_in_ms"`
+			IsExplicit               bool   `json:"is_explicit"`
+			DashManifest             string `json:"dash_manifest"`
+			HasLyrics                bool   `json:"has_lyrics"`
+			AudioAssetID             string `json:"audio_asset_id"`
+			IgArtist                 struct {
+				Pk            int    `json:"pk"`
+				Username      string `json:"username"`
+				FullName      string `json:"full_name"`
+				IsPrivate     bool   `json:"is_private"`
+				ProfilePicURL string `json:"profile_pic_url"`
+				ProfilePicID  string `json:"profile_pic_id"`
+				IsVerified    bool   `json:"is_verified"`
+			} `json:"ig_artist"`
+			PlaceholderProfilePicURL string `json:"placeholder_profile_pic_url"`
+			ShouldMuteAudio          bool   `json:"should_mute_audio"`
+			ShouldMuteAudioReason    string `json:"should_mute_audio_reason"`
+			OverlapDurationInMs      int    `json:"overlap_duration_in_ms"`
+			AudioAssetStartTimeInMs  int    `json:"audio_asset_start_time_in_ms"`
+		} `json:"music_asset_info"`
+	} `json:"story_music_stickers,omitempty"`
+}
+
+// Comment pushes a text comment to media item.
+//
+// If parent media is a Story this function will send a private message
+// replying the Instagram story.
+func (item *Item) Comment(text string) error {
+	var opt *reqOptions
+	var err error
+	insta := item.media.instagram()
+
+	switch item.media.(type) {
+	case *StoryMedia:
+		to, err := prepareRecipients(item)
+		if err != nil {
+			return err
+		}
+
+		query := insta.prepareDataQuery(
+			map[string]interface{}{
+				"recipient_users": to,
+				"action":          "send_item",
+				"media_id":        item.ID,
+				"client_context":  generateUUID(),
+				"text":            text,
+				"entry":           "reel",
+				"reel_id":         item.User.ID,
+			},
+		)
+		opt = &reqOptions{
+			Connection: "keep-alive",
+			Endpoint:   fmt.Sprintf("%s?media_type=%s", urlReplyStory, item.MediaToString()),
+			Query:      query,
+			IsPost:     true,
+		}
+	case *FeedMedia: // normal media
+		var data string
+		data, err = insta.prepareData(
+			map[string]interface{}{
+				"comment_text": text,
+			},
+		)
+		opt = &reqOptions{
+			Endpoint: fmt.Sprintf(urlCommentAdd, item.Pk),
+			Query:    generateSignature(data),
+			IsPost:   true,
+		}
+	}
+	if err != nil {
+		return err
+	}
+
+	// ignoring response
+	_, err = insta.sendRequest(opt)
+	return err
 }
 
 // MediaToString returns Item.MediaType as string.
@@ -104,6 +231,8 @@ func (item *Item) MediaToString() string {
 		return "photo"
 	case 2:
 		return "video"
+	case 8:
+		return "carousel"
 	}
 	return ""
 }
@@ -187,31 +316,32 @@ func GetBest(obj interface{}) string {
 	return m.url
 }
 
+var rxpTags = regexp.MustCompile(`#\w+`)
+
 // Hashtags returns caption hashtags.
 //
 // Item media parent must be FeedMedia.
 //
 // See example: examples/media/hashtags.go
 func (item *Item) Hashtags() []Hashtag {
-	hsh := make([]Hashtag, 0)
-	capt := item.Caption.Text
-	for {
-		i := strings.IndexByte(capt, '#')
-		if i < 0 {
-			break
-		}
-		n := strings.IndexByte(capt[i:], ' ')
-		if n < 0 { // last hashtag
-			hsh = append(hsh, Hashtag{Name: capt[i+1:]})
-			break
-		}
+	tags := rxpTags.FindAllString(item.Caption.Text, -1)
 
-		// avoiding '#' character
-		hsh = append(hsh, Hashtag{Name: capt[i+1 : i+n]})
+	hsh := make([]Hashtag, len(tags))
 
-		// snipping caption
-		capt = capt[n+i:]
+	i := 0
+	for _, tag := range tags {
+		hsh[i].Name = tag[1:]
+		i++
 	}
+
+	for _, comment := range item.PreviewComments() {
+		tags := rxpTags.FindAllString(comment.Text, -1)
+
+		for _, tag := range tags {
+			hsh = append(hsh, Hashtag{Name: tag[1:]})
+		}
+	}
+
 	return hsh
 }
 
@@ -409,16 +539,37 @@ func (item *Item) TopLikers() []string {
 // If PreviewComments are string or []string only the Text field will be filled.
 func (item *Item) PreviewComments() []Comment {
 	switch s := item.Previewcomments.(type) {
-	case []Comment:
-		return s
-	case []string:
-		comments := make([]Comment, 0)
-		for i := range s {
-			comments = append(comments, Comment{
-				Text: s[i],
-			})
+	case []interface{}:
+		if len(s) == 0 {
+			return nil
 		}
-		return comments
+
+		switch s[0].(type) {
+		case interface{}:
+			comments := make([]Comment, 0)
+			for i := range s {
+				if buf, err := json.Marshal(s[i]); err != nil {
+					return nil
+				} else {
+					comment := &Comment{}
+
+					if err = json.Unmarshal(buf, comment); err != nil {
+						return nil
+					} else {
+						comments = append(comments, *comment)
+					}
+				}
+			}
+			return comments
+		case string:
+			comments := make([]Comment, 0)
+			for i := range s {
+				comments = append(comments, Comment{
+					Text: s[i].(string),
+				})
+			}
+			return comments
+		}
 	case string:
 		comments := []Comment{
 			{
@@ -428,6 +579,12 @@ func (item *Item) PreviewComments() []Comment {
 		return comments
 	}
 	return nil
+}
+
+// StoryIsCloseFriends returns a bool
+// If the returned value is true the story was published only for close friends
+func (item *Item) StoryIsCloseFriends() bool {
+	return item.Audience == "besties"
 }
 
 //Media interface defines methods for both StoryMedia and FeedMedia.
@@ -677,6 +834,11 @@ func (media *FeedMedia) instagram() *Instagram {
 	return media.inst
 }
 
+// SetInstagram set instagram
+func (media *FeedMedia) SetInstagram(inst *Instagram) {
+	media.inst = inst
+}
+
 // SetID sets media ID
 // this value can be int64 or string
 func (media *FeedMedia) SetID(id interface{}) {
@@ -701,7 +863,7 @@ func (media *FeedMedia) Sync() error {
 		&reqOptions{
 			Endpoint: fmt.Sprintf(urlMediaInfo, id),
 			Query:    generateSignature(data),
-			IsPost:   true,
+			IsPost:   false,
 		},
 	)
 	if err != nil {
@@ -806,106 +968,16 @@ func (media *FeedMedia) Next(params ...interface{}) bool {
 func (insta *Instagram) UploadPhoto(photo io.Reader, photoCaption string, quality int, filterType int) (Item, error) {
 	out := Item{}
 
-	uploadID := time.Now().Unix()
-
-	photoName := fmt.Sprintf("pending_media_%d.jpg", uploadID)
-	var b bytes.Buffer
-	w := multipart.NewWriter(&b)
-
-	w.WriteField("upload_id", strconv.FormatInt(uploadID, 10))
-	w.WriteField("_uuid", insta.uuid)
-	w.WriteField("_csrftoken", insta.token)
-
-	var compression = map[string]interface{}{
-		"lib_name":    "jt",
-		"lib_version": "1.3.0",
-		"quality":     quality,
-	}
-	cBytes, _ := json.Marshal(compression)
-	w.WriteField("image_compression", toString(cBytes))
-
-	fw, err := w.CreateFormFile("photo", photoName)
+	config, err := insta.postPhoto(photo, photoCaption, quality, filterType, false)
 	if err != nil {
 		return out, err
-	}
-
-	var buf bytes.Buffer
-	rdr := io.TeeReader(photo, &buf)
-	if _, err = io.Copy(fw, rdr); err != nil {
-		return out, err
-	}
-	if err := w.Close(); err != nil {
-		return out, err
-	}
-	req, err := http.NewRequest("POST", goInstaAPIUrl+"upload/photo/", &b)
-	if err != nil {
-		return out, err
-	}
-	req.Header.Set("X-IG-Capabilities", "3Q4=")
-	req.Header.Set("X-IG-Connection-Type", "WIFI")
-	req.Header.Set("Cookie2", "$Version=1")
-	req.Header.Set("Accept-Language", "en-US")
-	req.Header.Set("Accept-Encoding", "gzip, deflate")
-	req.Header.Set("Content-type", w.FormDataContentType())
-	req.Header.Set("Connection", "close")
-	req.Header.Set("User-Agent", goInstaUserAgent)
-
-	resp, err := insta.c.Do(req)
-	if err != nil {
-		return out, err
-	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return out, err
-	}
-	if resp.StatusCode != 200 {
-		return out, fmt.Errorf("invalid status code, result: %s", resp.Status)
-	}
-
-	var result struct {
-		UploadID       string      `json:"upload_id"`
-		XsharingNonces interface{} `json:"xsharing_nonces"`
-		Status         string      `json:"status"`
-	}
-	err = json.Unmarshal(body, &result)
-	if err != nil {
-		return out, err
-	}
-
-	if result.Status != "ok" {
-		return out, fmt.Errorf("unknown error, status: %s", result.Status)
-	}
-
-	width, height, err := getImageDimensionFromReader(&buf)
-	if err != nil {
-		return out, err
-	}
-
-	config := map[string]interface{}{
-		"media_folder": "Instagram",
-		"source_type":  4,
-		"caption":      photoCaption,
-		"upload_id":    strconv.FormatInt(uploadID, 10),
-		"device":       goInstaDeviceSettings,
-		"edits": map[string]interface{}{
-			"crop_original_size": []int{width * 1.0, height * 1.0},
-			"crop_center":        []float32{0.0, 0.0},
-			"crop_zoom":          1.0,
-			"filter_type":        filterType,
-		},
-		"extra": map[string]interface{}{
-			"source_width":  width,
-			"source_height": height,
-		},
 	}
 	data, err := insta.prepareData(config)
 	if err != nil {
 		return out, err
 	}
 
-	body, err = insta.sendRequest(&reqOptions{
+	body, err := insta.sendRequest(&reqOptions{
 		Endpoint: "media/configure/?",
 		Query:    generateSignature(data),
 		IsPost:   true,
@@ -924,7 +996,149 @@ func (insta *Instagram) UploadPhoto(photo io.Reader, photoCaption string, qualit
 	}
 
 	if uploadResult.Status != "ok" {
-		return out, fmt.Errorf("invalid status, result: %s", resp.Status)
+		return out, fmt.Errorf("invalid status, result: %s", uploadResult.Status)
+	}
+
+	return uploadResult.Media, nil
+}
+
+func (insta *Instagram) postPhoto(photo io.Reader, photoCaption string, quality int, filterType int, isSidecar bool) (map[string]interface{}, error) {
+	uploadID := time.Now().Unix()
+	photoName := fmt.Sprintf("pending_media_%d.jpg", uploadID)
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	w.WriteField("upload_id", strconv.FormatInt(uploadID, 10))
+	w.WriteField("_uuid", insta.uuid)
+	w.WriteField("_csrftoken", insta.token)
+	var compression = map[string]interface{}{
+		"lib_name":    "jt",
+		"lib_version": "1.3.0",
+		"quality":     quality,
+	}
+	cBytes, _ := json.Marshal(compression)
+	w.WriteField("image_compression", toString(cBytes))
+	if isSidecar {
+		w.WriteField("is_sidecar", toString(1))
+	}
+	fw, err := w.CreateFormFile("photo", photoName)
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	rdr := io.TeeReader(photo, &buf)
+	if _, err = io.Copy(fw, rdr); err != nil {
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest("POST", goInstaAPIUrl+"upload/photo/", &b)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-IG-Capabilities", "3Q4=")
+	req.Header.Set("X-IG-Connection-Type", "WIFI")
+	req.Header.Set("Cookie2", "$Version=1")
+	req.Header.Set("Accept-Language", "en-US")
+	req.Header.Set("Accept-Encoding", "gzip, deflate")
+	req.Header.Set("Content-type", w.FormDataContentType())
+	req.Header.Set("Connection", "close")
+	req.Header.Set("User-Agent", goInstaUserAgent)
+
+	resp, err := insta.c.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("invalid status code, result: %s", resp.Status)
+	}
+	var result struct {
+		UploadID       string      `json:"upload_id"`
+		XsharingNonces interface{} `json:"xsharing_nonces"`
+		Status         string      `json:"status"`
+	}
+	err = json.Unmarshal(body, &result)
+	if err != nil {
+		return nil, err
+	}
+	if result.Status != "ok" {
+		return nil, fmt.Errorf("unknown error, status: %s", result.Status)
+	}
+	width, height, err := getImageDimensionFromReader(&buf)
+	if err != nil {
+		return nil, err
+	}
+	config := map[string]interface{}{
+		"media_folder": "Instagram",
+		"source_type":  4,
+		"caption":      photoCaption,
+		"upload_id":    strconv.FormatInt(uploadID, 10),
+		"device":       goInstaDeviceSettings,
+		"edits": map[string]interface{}{
+			"crop_original_size": []int{width * 1.0, height * 1.0},
+			"crop_center":        []float32{0.0, 0.0},
+			"crop_zoom":          1.0,
+			"filter_type":        filterType,
+		},
+		"extra": map[string]interface{}{
+			"source_width":  width,
+			"source_height": height,
+		},
+	}
+	return config, nil
+}
+
+// UploadAlbum post image from io.Reader to instagram.
+func (insta *Instagram) UploadAlbum(photos []io.Reader, photoCaption string, quality int, filterType int) (Item, error) {
+	out := Item{}
+
+	var childrenMetadata []map[string]interface{}
+	for _, photo := range photos {
+		config, err := insta.postPhoto(photo, photoCaption, quality, filterType, true)
+		if err != nil {
+			return out, err
+		}
+
+		childrenMetadata = append(childrenMetadata, config)
+	}
+	albumUploadID := time.Now().Unix()
+
+	config := map[string]interface{}{
+		"caption":           photoCaption,
+		"client_sidecar_id": albumUploadID,
+		"children_metadata": childrenMetadata,
+	}
+	data, err := insta.prepareData(config)
+	if err != nil {
+		return out, err
+	}
+
+	body, err := insta.sendRequest(&reqOptions{
+		Endpoint: "media/configure_sidecar/?",
+		Query:    generateSignature(data),
+		IsPost:   true,
+	})
+	if err != nil {
+		return out, err
+	}
+
+	var uploadResult struct {
+		Media           Item   `json:"media"`
+		ClientSideCarID int64  `json:"client_sidecar_id"`
+		Status          string `json:"status"`
+	}
+	err = json.Unmarshal(body, &uploadResult)
+	if err != nil {
+		return out, err
+	}
+
+	if uploadResult.Status != "ok" {
+		return out, fmt.Errorf("invalid status, result: %s", uploadResult.Status)
 	}
 
 	return uploadResult.Media, nil

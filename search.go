@@ -2,6 +2,7 @@ package goinsta
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"time"
 )
@@ -69,8 +70,12 @@ func newSearch(inst *Instagram) *Search {
 	return search
 }
 
-// User search by username
-func (search *Search) User(user string) (*SearchResult, error) {
+// User search by username, you can use count optional parameter to get more than 50 items.
+func (search *Search) User(user string, countParam ...int) (*SearchResult, error) {
+	count := 50
+	if len(countParam) > 0 {
+		count = countParam[0]
+	}
 	insta := search.inst
 	body, err := insta.sendRequest(
 		&reqOptions{
@@ -78,7 +83,8 @@ func (search *Search) User(user string) (*SearchResult, error) {
 			Query: map[string]string{
 				"ig_sig_key_version": goInstaSigKeyVersion,
 				"is_typeahead":       "true",
-				"query":              user,
+				"q":                  user,
+				"count":              fmt.Sprintf("%d", count),
 				"rank_token":         insta.rankToken,
 			},
 		},
@@ -89,6 +95,9 @@ func (search *Search) User(user string) (*SearchResult, error) {
 
 	res := &SearchResult{}
 	err = json.Unmarshal(body, res)
+	for id := range res.Users {
+		res.Users[id].inst = insta
+	}
 	return res, err
 }
 
